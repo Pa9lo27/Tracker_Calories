@@ -21,6 +21,8 @@ ALLOWED_USERS = [992113841, 987654321, 555555555, 777777777]
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
+GEMINI_CONFIG = {"thinking_config": {"thinking_budget": -1}}
+
 
 # --- ХЕЛПЕРИ ---
 
@@ -119,7 +121,26 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Обери дію:", reply_markup=get_main_keyboard())
 
     elif query.data in ["stats_today", "stats_days_7", "stats_days_30"]:
-        await query.edit_message_text(f"Звіт формується... (API запит на {query.data})")
+        try:
+            async with httpx.AsyncClient() as client:
+                if query.data == "stats_today":
+                    r = await client.get(f"{CALORIE_SERVICE_URL}/analytics/today/{user_id}", timeout=5)
+                    d = r.json()
+                    text = (f"📊 Сьогодні:\n"
+                            f"Калорії: {d['calories']} ккал\n"
+                            f"Б: {d['proteins']}г | Ж: {d['fats']}г | В: {d['carbs']}г")
+                else:
+                    days = 7 if query.data == "stats_days_7" else 30
+                    r = await client.get(f"{CALORIE_SERVICE_URL}/analytics/days/{user_id}/{days}", timeout=5)
+                    d = r.json()
+                    text = (f" За {days} днів (середнє/день):\n"
+                            f"Калорії: {d['avg_calories']} ккал\n"
+                            f"Б: {d['avg_proteins']}г | Ж: {d['avg_fats']}г | В: {d['avg_carbs']}г")
+        except Exception as e:
+            print(f"[ERROR] Статистика: {e}")
+            text = "Не вдалося отримати статистику."
+
+        await query.edit_message_text(text, reply_markup=get_main_keyboard())
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,19 +155,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         prompt = (f"Проаналізуй: '{user_text}'. "
-                  "Виведи інгредієнти, КБЖВ, дієтичну пораду. "
-                  "Формат:\n- Інгредієнт (вага, ккал, Б: Хг, Ж: Хг, В: Хг)\n"
+                  "Виведи інгредієнти та КБЖВ. "
+                  "Формат (строго, без зайвого тексту):\n"
+                  "- Інгредієнт (вага, ккал, Б: Хг, Ж: Хг, В: Хг)\n"
                   "Всього: Х ккал (Б: Хг, Ж: Хг, В: Хг)\n"
-                  "Дієтична порада: [текст]")
+                  "Порада: [одне речення]")
 
-        response = ai_client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=GEMINI_CONFIG
+        )
         res_text = response.text
     except Exception as e:
         print(f"[ERROR] Gemini: {e}")
         await waiting_msg.edit_text("Не вдалося отримати відповідь від ШІ.")
         return
 
-    # Парсинг та збереження — окремо, щоб не блокувало кнопки
     try:
         cal, prot, fat, carb = await extract_data_from_text(res_text)
         await save_meal_to_db(user_id, cal, prot, fat, carb)
@@ -174,12 +199,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = Image.open(file_path)
 
         prompt = ("Проаналізуй це фото їжі. "
-                  "Виведи інгредієнти, КБЖВ, дієтичну пораду. "
-                  "Формат:\n- Інгредієнт (вага, ккал, Б: Хг, Ж: Хг, В: Хг)\n"
+                  "Виведи інгредієнти та КБЖВ. "
+                  "Формат (строго, без зайвого тексту):\n"
+                  "- Інгредієнт (вага, ккал, Б: Хг, Ж: Хг, В: Хг)\n"
                   "Всього: Х ккал (Б: Хг, Ж: Хг, В: Хг)\n"
-                  "Дієтична порада: [текст]")
+                  "Порада: [одне речення]")
 
-        response = ai_client.models.generate_content(model='gemini-3-flash-preview', contents=[image, prompt])
+        response = ai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[image, prompt],
+            config=GEMINI_CONFIG
+        )
         res_text = response.text
     except Exception as e:
         print(f"[ERROR] Gemini фото: {e}")
@@ -188,7 +218,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
         return
 
-    # Парсинг та збереження — окремо, щоб не блокувало кнопки
     try:
         cal, prot, fat, carb = await extract_data_from_text(res_text)
         await save_meal_to_db(user_id, cal, prot, fat, carb)

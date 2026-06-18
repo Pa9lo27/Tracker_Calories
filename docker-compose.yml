@@ -1,9 +1,15 @@
 services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+
   state-service:
     build: .
     command: uvicorn bot_service.state_service:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    depends_on:
+      - redis
 
   calorie-service:
     build: .
@@ -20,7 +26,8 @@ services:
       - state-service
       - calorie-service
     env_file:
-      - .env
+      - bot_service/.env
     environment:
       - STATE_SERVICE_URL=http://state-service:8000
       - CALORIE_SERVICE_URL=http://calorie-service:8001
+      - PYTHONUNBUFFERED=1
